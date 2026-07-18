@@ -63,6 +63,38 @@ def save_json(path, data):
         json.dump(data, fh, indent=2)
 
 
+def parse_date_range(date_range_cfg):
+    """
+    Parse a date range config and return a list of dates.
+    
+    Supports:
+    - Single date: "20260722"
+    - Date range: {"start": "20260722", "end": "20260725"}
+    """
+    if isinstance(date_range_cfg, str):
+        return [date_range_cfg]
+    
+    if isinstance(date_range_cfg, dict):
+        start = date_range_cfg.get("start")
+        end = date_range_cfg.get("end")
+        if not start or not end:
+            sys.exit("date_range dict must have 'start' and 'end'")
+        
+        # Parse dates
+        from datetime import datetime, timedelta
+        start_dt = datetime.strptime(start, "%Y%m%d")
+        end_dt = datetime.strptime(end, "%Y%m%d")
+        
+        dates = []
+        current = start_dt
+        while current <= end_dt:
+            dates.append(current.strftime("%Y%m%d"))
+            current += timedelta(days=1)
+        return dates
+    
+    sys.exit("requested_date must be a string or date_range dict")
+
+
 def load_config():
     cfg = load_json(CONFIG_PATH, default={}) or {}
 
@@ -82,20 +114,34 @@ def load_config():
     if os.environ.get("HEADERS_JSON"):
         cfg["headers"] = json.loads(os.environ["HEADERS_JSON"])
 
-    # The BMS date is embedded in the URL, so build the URL from the template
-    # and the (possibly overridden) requested_date. Set REQUESTED_DATE=20260717
-    # to point everything at the 17th for a live end-to-end test.
-    if cfg.get("url_template") and cfg.get("requested_date"):
-        cfg["target_url"] = cfg["url_template"].format(date=cfg["requested_date"])
+    # Parse date range or single date into a list of dates
+    date_config = cfg.get("date_range") or cfg.get("requested_date")
+    if date_config:
+        cfg["requested_dates"] = parse_date_range(date_config)
+    
+    # For backward compatibility: if only target_url is set (no template),
+    # still support it for single-date checks.
+    if cfg.get("url_template") and cfg.get("requested_dates"):
+        # Will be built per-date in main()
+        pass
+    elif cfg.get("target_url") and not cfg.get("url_template"):
+        # Single target URL provided directly
+        pass
 
-    required = ["target_url", "telegram_bot_token", "telegram_chat_id"]
+    required = ["telegram_bot_token", "telegram_chat_id"]
     detector = cfg.get("detector")
     if detector in ("bms_date", "venue_date"):
-        required.append("requested_date")
-    elif detector != "venue_date":
-        required.append("theatre")
+        if not (cfg.get("requested_dates") or cfg.get("date_range") or cfg.get("requested_date")):
+            sys.exit("bms_date/venue_date detector needs 'requested_date' or 'date_range'")
+        required.append("url_template")
+    else:
+        required.append("target_url")
+        if detector != "venue_date":
+            required.append("theatre")
+    
     if detector == "venue_date" and not (cfg.get("venue_code") or cfg.get("venue_codes")):
         sys.exit("venue_date detector needs 'venue_code' or 'venue_codes'")
+    
     missing = [k for k in required if not cfg.get(k)]
     if missing:
         sys.exit(f"Missing required config: {', '.join(missing)}")
@@ -252,50 +298,85 @@ def is_available_generic(page_text, cfg):
 
 def main():
     cfg = load_config()
-    state = load_json(STATE_PATH, default={"available": False}) or {"available": False}
-
-    target_desc = cfg.get("theatre") or cfg.get("requested_date", "target")
-    label = f"{cfg.get('movie', 'movie')} @ {target_desc}"
-
-    try:
-        page = fetch(cfg)
-    except requests.RequestException as exc:
-        # Transient network/blocking errors shouldn't crash the workflow.
-        print(f"[{label}] fetch failed: {exc}")
-        return 0
-
-    available = is_available(page, cfg)
-    print(f"[{label}] available={available} (was {state.get('available')})")
-
-    if available and not state.get("available"):
-        if cfg.get("detector") in ("bms_date", "venue_date"):
-            rd = cfg["requested_date"]
-            pretty = f"{rd[6:8]}-{rd[4:6]}-{rd[0:4]}"
-            venue = cfg.get("venue_label") or cfg.get("venue_code") or ""
-            venue_line = f"Theatre: {venue}\n" if venue else ""
-            msg = (
-                f"🎬 Booking just OPENED!\n\n"
-                f"{cfg.get('movie', 'Movie')}\n"
-                f"{venue_line}"
-                f"Date: {pretty}\n\n"
-                f"Book here: {cfg['target_url']}"
-            )
-        else:
-            msg = (
-                f"🎬 Booking is OPEN!\n\n"
-                f"{cfg.get('movie', 'Movie')}\n"
-                f"Theatre: {cfg['theatre']}\n\n"
-                f"Book here: {cfg['target_url']}"
-            )
-        send_telegram(cfg["telegram_bot_token"], cfg["telegram_chat_id"], msg)
-        print(f"[{label}] notification sent")
-
-    # Persist current state so we don't re-alert every run.
-    if available != state.get("available"):
-        state["available"] = available
-        state["checked_at"] = int(time.time())
+    state = load_json(STATE_PATH, default={"dates": {}}) or {"dates": {}}
+    
+    # Ensure state has the 'dates' key for multi-date tracking
+    if "dates" not in state:
+        state["dates"] = {}
+    
+    requested_dates = cfg.get("requested_dates", [])
+    detector = cfg.get("detector")
+    
+    # If no date range, fall back to single date handling
+    if not requested_dates and cfg.get("requested_date"):
+        requested_dates = [cfg["requested_date"]]
+    
+    if not requested_dates and detector not in ("bms_date", "venue_date"):
+        # Generic detector with single URL
+        requested_dates = [None]
+    
+    any_transitioned = False
+    
+    for requested_date in requested_dates:
+        # Build per-date config
+        date_cfg = dict(cfg)
+        date_key = requested_date  # Used as state key
+        
+        if requested_date:
+            date_cfg["requested_date"] = requested_date
+            if cfg.get("url_template"):
+                date_cfg["target_url"] = cfg["url_template"].format(date=requested_date)
+        
+        target_desc = date_cfg.get("theatre") or requested_date or "target"
+        label = f"{date_cfg.get('movie', 'movie')} @ {target_desc}"
+        
+        try:
+            page = fetch(date_cfg)
+        except requests.RequestException as exc:
+            # Transient network/blocking errors shouldn't crash the workflow.
+            print(f"[{label}] fetch failed: {exc}")
+            continue
+        
+        available = is_available(page, date_cfg)
+        prev_available = state["dates"].get(date_key, {}).get("available", False)
+        print(f"[{label}] available={available} (was {prev_available})")
+        
+        if available and not prev_available:
+            # Transition to available
+            if detector in ("bms_date", "venue_date"):
+                rd = requested_date
+                pretty = f"{rd[6:8]}-{rd[4:6]}-{rd[0:4]}"
+                venue = date_cfg.get("venue_label") or date_cfg.get("venue_code") or ""
+                venue_line = f"Theatre: {venue}\n" if venue else ""
+                msg = (
+                    f"🎬 Booking just OPENED!\n\n"
+                    f"{date_cfg.get('movie', 'Movie')}\n"
+                    f"{venue_line}"
+                    f"Date: {pretty}\n\n"
+                    f"Book here: {date_cfg['target_url']}"
+                )
+            else:
+                msg = (
+                    f"🎬 Booking is OPEN!\n\n"
+                    f"{date_cfg.get('movie', 'Movie')}\n"
+                    f"Theatre: {date_cfg['theatre']}\n\n"
+                    f"Book here: {date_cfg['target_url']}"
+                )
+            send_telegram(date_cfg["telegram_bot_token"], date_cfg["telegram_chat_id"], msg)
+            print(f"[{label}] notification sent")
+            any_transitioned = True
+        
+        # Persist per-date state
+        if available != prev_available or date_key not in state["dates"]:
+            state["dates"][date_key] = {
+                "available": available,
+                "checked_at": int(time.time())
+            }
+    
+    # Save state if anything changed
+    if any_transitioned or state["dates"]:
         save_json(STATE_PATH, state)
-
+    
     return 0
 
 

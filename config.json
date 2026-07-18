@@ -1,7 +1,10 @@
 {
   "detector": "venue_date",
   "movie": "The Odyssey (IMAX 2D)",
-  "requested_date": "20260722",
+  "date_range": {
+    "start": "20260722",
+    "end": "20260731"
+  },
   "venue_code": "PVPZ",
   "venue_label": "PVR: Palazzo The Nexus Vijaya Mall",
   "url_template": "https://in.bookmyshow.com/movies/chen/the-odyssey/buytickets/ET00480917/{date}"

@@ -1,4 +1,44 @@
 {
-  "available": true,
-  "checked_at": 1784401845
+  "dates": {
+    "20260722": {
+      "available": false,
+      "checked_at": 1784402999
+    },
+    "20260723": {
+      "available": false,
+      "checked_at": 1784402735
+    },
+    "20260724": {
+      "available": false,
+      "checked_at": 1784402741
+    },
+    "20260725": {
+      "available": false,
+      "checked_at": 1784402744
+    },
+    "20260726": {
+      "available": false,
+      "checked_at": 1784403013
+    },
+    "20260727": {
+      "available": false,
+      "checked_at": 1784403016
+    },
+    "20260728": {
+      "available": false,
+      "checked_at": 1784403019
+    },
+    "20260729": {
+      "available": false,
+      "checked_at": 1784403023
+    },
+    "20260730": {
+      "available": false,
+      "checked_at": 1784403026
+    },
+    "20260731": {
+      "available": false,
+      "checked_at": 1784403029
+    }
+  }
 }
