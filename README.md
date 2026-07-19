@@ -4,6 +4,9 @@ Get a **Telegram** ping the moment a specific **movie + theatre + date** opens
 for booking on BookMyShow. Runs on **GitHub Actions**, triggered every ~10 min
 by **cron-job.org** — nothing to keep running on your own machine.
 
+<img width="1220" height="1076" alt="Media" src="https://github.com/user-attachments/assets/3c6a8f8e-5458-42a5-a870-9001a9990de3" />
+
+
 ## How it works
 
 1. **cron-job.org** triggers the workflow every ~10 min (GitHub's own scheduler
